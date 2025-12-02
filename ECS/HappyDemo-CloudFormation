@@ -1,0 +1,459 @@
+AWSTemplateFormatVersion: '2010-09-09'
+
+Description: >
+  ECS Fargate deployment with two services in the same cluster,
+  each service has its own ALB.
+
+Parameters:
+  VPCName:
+    Type: String
+    Default: MyVPC
+    Description: Name of the VPC
+  VpcCIDR:
+    Type: String
+    Default: 10.0.0.0/16
+    Description: CIDR block for new VPC
+  PublicSubnet1CIDR:
+    Type: String
+    Default: 10.0.0.0/24
+    Description: CIDR block for public subnet 1
+  PublicSubnet2CIDR:
+    Type: String
+    Default: 10.0.1.0/24
+    Description: CIDR block for public subnet 2
+  PrivateSubnet1CIDR:
+    Type: String
+    Default: 10.0.2.0/24
+    Description: CIDR block for private subnet 1
+  PrivateSubnet2CIDR:
+    Type: String
+    Default: 10.0.3.0/24
+    Description: CIDR block for private subnet 2
+  ECSClusterName:
+    Type: String
+    Default: MyECSCluster
+    Description: ECS Cluster name
+  DesiredCount:
+    Type: Number
+    Default: 2
+    Description: Number of ECS tasks desired per service
+  TaskCpu:
+    Type: String
+    Default: '512'
+    Description: CPU units for ECS task
+  TaskMemory:
+    Type: String
+    Default: '1024'
+    Description: Memory (MiB) for ECS task
+  ECSServiceName1:
+    Type: String
+    Default: FrontendService
+    Description: ECS Service 1 name
+  ContainerName1:
+    Type: String
+    Default: frontend-container
+    Description: Name of ECS container 1
+  ContainerPort1:
+    Type: Number
+    Default: 80
+    Description: Container port for ECS task 1
+  ECRImage1:
+    Type: String
+    Description: ECR image URI for Service 1
+  HealthCheckPath1:
+    Type: String
+    Default: /
+    Description: Health check path for Service 1
+  ECSServiceName2:
+    Type: String
+    Default: BackendService
+    Description: ECS Service 2 name
+  ContainerName2:
+    Type: String
+    Default: backend-container
+    Description: Name of ECS container 2
+  ContainerPort2:
+    Type: Number
+    Default: 8080
+    Description: Container port for ECS task 2
+  ECRImage2:
+    Type: String
+    Description: ECR image URI for Service 2
+  HealthCheckPath2:
+    Type: String
+    Default: /
+    Description: Health check path for Service 2
+
+Resources:
+  VPC:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: !Ref VpcCIDR
+      EnableDnsSupport: true
+      EnableDnsHostnames: true
+      Tags:
+        - Key: Name
+          Value: !Ref VPCName
+
+  InternetGateway:
+    Type: AWS::EC2::InternetGateway
+
+  AttachGateway:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties:
+      VpcId: !Ref VPC
+      InternetGatewayId: !Ref InternetGateway
+
+  PublicSubnet1:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPC
+      CidrBlock: !Ref PublicSubnet1CIDR
+      AvailabilityZone: !Select [0, !GetAZs '']
+      MapPublicIpOnLaunch: true
+
+  PublicSubnet2:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPC
+      CidrBlock: !Ref PublicSubnet2CIDR
+      AvailabilityZone: !Select [1, !GetAZs '']
+      MapPublicIpOnLaunch: true
+
+  PrivateSubnet1:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPC
+      CidrBlock: !Ref PrivateSubnet1CIDR
+      AvailabilityZone: !Select [0, !GetAZs '']
+
+  PrivateSubnet2:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPC
+      CidrBlock: !Ref PrivateSubnet2CIDR
+      AvailabilityZone: !Select [1, !GetAZs '']
+
+  PublicRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref VPC
+
+  PublicRoute:
+    Type: AWS::EC2::Route
+    DependsOn: AttachGateway
+    Properties:
+      RouteTableId: !Ref PublicRouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId: !Ref InternetGateway
+
+  PublicSubnet1RouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PublicSubnet1
+      RouteTableId: !Ref PublicRouteTable
+
+  PublicSubnet2RouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PublicSubnet2
+      RouteTableId: !Ref PublicRouteTable
+
+  NatEIP1:
+    Type: AWS::EC2::EIP
+    Properties:
+      Domain: vpc
+
+  NatEIP2:
+    Type: AWS::EC2::EIP
+    Properties:
+      Domain: vpc
+
+  NatGateway1:
+    Type: AWS::EC2::NatGateway
+    Properties:
+      AllocationId: !GetAtt NatEIP1.AllocationId
+      SubnetId: !Ref PublicSubnet1
+
+  NatGateway2:
+    Type: AWS::EC2::NatGateway
+    Properties:
+      AllocationId: !GetAtt NatEIP2.AllocationId
+      SubnetId: !Ref PublicSubnet2
+
+  PrivateRouteTable1:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref VPC
+
+  PrivateRoute1:
+    Type: AWS::EC2::Route
+    Properties:
+      RouteTableId: !Ref PrivateRouteTable1
+      DestinationCidrBlock: 0.0.0.0/0
+      NatGatewayId: !Ref NatGateway1
+
+  PrivateSubnet1RouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PrivateSubnet1
+      RouteTableId: !Ref PrivateRouteTable1
+
+  PrivateRouteTable2:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref VPC
+
+  PrivateRoute2:
+    Type: AWS::EC2::Route
+    Properties:
+      RouteTableId: !Ref PrivateRouteTable2
+      DestinationCidrBlock: 0.0.0.0/0
+      NatGatewayId: !Ref NatGateway2
+
+  PrivateSubnet2RouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PrivateSubnet2
+      RouteTableId: !Ref PrivateRouteTable2
+
+  FrontendALBSG:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Security group for Frontend ALB
+      VpcId: !Ref VPC
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          CidrIp: 0.0.0.0/0
+
+  BackendALBSG:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Security group for Backend ALB
+      VpcId: !Ref VPC
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          CidrIp: 0.0.0.0/0
+
+  ECSServiceSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: ECS tasks SG
+      VpcId: !Ref VPC
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 0
+          ToPort: 65535
+          SourceSecurityGroupId: !Ref FrontendALBSG
+        - IpProtocol: tcp
+          FromPort: 0
+          ToPort: 65535
+          SourceSecurityGroupId: !Ref BackendALBSG
+
+  FrontendALB:
+    Type: AWS::ElasticLoadBalancingV2::LoadBalancer
+    Properties:
+      Scheme: internet-facing
+      Subnets:
+        - !Ref PublicSubnet1
+        - !Ref PublicSubnet2
+      SecurityGroups:
+        - !Ref FrontendALBSG
+
+  FrontendTG:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      Port: !Ref ContainerPort1
+      Protocol: HTTP
+      TargetType: ip
+      VpcId: !Ref VPC
+      HealthCheckPath: !Ref HealthCheckPath1
+
+  FrontendListener:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Properties:
+      LoadBalancerArn: !Ref FrontendALB
+      Port: 80
+      Protocol: HTTP
+      DefaultActions:
+        - Type: forward
+          TargetGroupArn: !Ref FrontendTG
+
+  BackendALB:
+    Type: AWS::ElasticLoadBalancingV2::LoadBalancer
+    Properties:
+      Scheme: internet-facing
+      Subnets:
+        - !Ref PublicSubnet1
+        - !Ref PublicSubnet2
+      SecurityGroups:
+        - !Ref BackendALBSG
+
+  BackendTG:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      Port: !Ref ContainerPort2
+      Protocol: HTTP
+      TargetType: ip
+      VpcId: !Ref VPC
+      HealthCheckPath: !Ref HealthCheckPath2
+
+  BackendListener:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Properties:
+      LoadBalancerArn: !Ref BackendALB
+      Port: 80
+      Protocol: HTTP
+      DefaultActions:
+        - Type: forward
+          TargetGroupArn: !Ref BackendTG
+
+  ECSCluster:
+    Type: AWS::ECS::Cluster
+    Properties:
+      ClusterName: !Ref ECSClusterName
+
+  ECSLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub "/ecs/${ECSClusterName}"
+      RetentionInDays: 7
+
+  ECSTaskExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ecs-tasks.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy
+
+  ECSTaskRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ecs-tasks.amazonaws.com
+            Action: sts:AssumeRole
+
+  ECSTaskDefinition1:
+    Type: AWS::ECS::TaskDefinition
+    Properties:
+      Family: !Sub "${ECSClusterName}-frontend"
+      Cpu: !Ref TaskCpu
+      Memory: !Ref TaskMemory
+      NetworkMode: awsvpc
+      RequiresCompatibilities: [FARGATE]
+      ExecutionRoleArn: !GetAtt ECSTaskExecutionRole.Arn
+      TaskRoleArn: !GetAtt ECSTaskRole.Arn
+      ContainerDefinitions:
+        - Name: !Ref ContainerName1
+          Image: !Ref ECRImage1
+          PortMappings:
+            - ContainerPort: !Ref ContainerPort1
+          LogConfiguration:
+            LogDriver: awslogs
+            Options:
+              awslogs-group: !Ref ECSLogGroup
+              awslogs-region: !Ref AWS::Region
+              awslogs-stream-prefix: ecs
+
+  ECSTaskDefinition2:
+    Type: AWS::ECS::TaskDefinition
+    Properties:
+      Family: !Sub "${ECSClusterName}-backend"
+      Cpu: !Ref TaskCpu
+      Memory: !Ref TaskMemory
+      NetworkMode: awsvpc
+      RequiresCompatibilities: [FARGATE]
+      ExecutionRoleArn: !GetAtt ECSTaskExecutionRole.Arn
+      TaskRoleArn: !GetAtt ECSTaskRole.Arn
+      ContainerDefinitions:
+        - Name: !Ref ContainerName2
+          Image: !Ref ECRImage2
+          PortMappings:
+            - ContainerPort: !Ref ContainerPort2
+          LogConfiguration:
+            LogDriver: awslogs
+            Options:
+              awslogs-group: !Ref ECSLogGroup
+              awslogs-region: !Ref AWS::Region
+              awslogs-stream-prefix: ecs
+
+  ECSService1:
+    Type: AWS::ECS::Service
+    DependsOn: FrontendListener
+    Properties:
+      ServiceName: !Ref ECSServiceName1
+      Cluster: !Ref ECSCluster
+      DesiredCount: !Ref DesiredCount
+      LaunchType: FARGATE
+      TaskDefinition: !Ref ECSTaskDefinition1
+      NetworkConfiguration:
+        AwsvpcConfiguration:
+          AssignPublicIp: DISABLED
+          SecurityGroups:
+            - !Ref ECSServiceSecurityGroup
+          Subnets:
+            - !Ref PrivateSubnet1
+            - !Ref PrivateSubnet2
+      LoadBalancers:
+        - ContainerName: !Ref ContainerName1
+          ContainerPort: !Ref ContainerPort1
+          TargetGroupArn: !Ref FrontendTG
+
+  ECSService2:
+    Type: AWS::ECS::Service
+    DependsOn: BackendListener
+    Properties:
+      ServiceName: !Ref ECSServiceName2
+      Cluster: !Ref ECSCluster
+      DesiredCount: !Ref DesiredCount
+      LaunchType: FARGATE
+      TaskDefinition: !Ref ECSTaskDefinition2
+      NetworkConfiguration:
+        AwsvpcConfiguration:
+          AssignPublicIp: DISABLED
+          SecurityGroups:
+            - !Ref ECSServiceSecurityGroup
+          Subnets:
+            - !Ref PrivateSubnet1
+            - !Ref PrivateSubnet2
+      LoadBalancers:
+        - ContainerName: !Ref ContainerName2
+          ContainerPort: !Ref ContainerPort2
+          TargetGroupArn: !Ref BackendTG
+
+Outputs:
+  ClusterName:
+    Description: Name of the ECS Cluster
+    Value: !Ref ECSCluster
+  FrontendServiceName:
+    Description: ECS Service 1 name
+    Value: !Ref ECSService1
+  BackendServiceName:
+    Description: ECS Service 2 name
+    Value: !Ref ECSService2
+  FrontendALBDNS:
+    Description: DNS name for the Frontend ALB
+    Value: !GetAtt FrontendALB.DNSName
+  BackendALBDNS:
+    Description: DNS name for the Backend ALB
+    Value: !GetAtt BackendALB.DNSName
+  VPCId:
+    Description: VPC Id
+    Value: !Ref VPC
+  VPCName:
+    Description: VPC Name
+    Value: !Ref VPCName
